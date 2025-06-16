@@ -1,0 +1,551 @@
+import React, { useState, useCallback, useEffect } from 'react';
+
+const BOARD_SIZE = 19;
+const EMPTY = 0;
+const BLACK = 1;
+const WHITE = 2;
+
+const BadukGame = () => {
+  const [board, setBoard] = useState(() => 
+    Array(BOARD_SIZE).fill(null).map(() => Array(BOARD_SIZE).fill(EMPTY))
+  );
+  const [currentPlayer, setCurrentPlayer] = useState(BLACK);
+  const [capturedStones, setCapturedStones] = useState({ black: 0, white: 0 });
+  const [gameHistory, setGameHistory] = useState([]);
+  const [gameMode, setGameMode] = useState('pvp'); // 'pvp' or 'pvc'
+  const [isThinking, setIsThinking] = useState(false);
+
+  // 주변 좌표를 가져오는 함수
+  const getNeighbors = (row, col) => {
+    const neighbors = [];
+    if (row > 0) neighbors.push([row - 1, col]);
+    if (row < BOARD_SIZE - 1) neighbors.push([row + 1, col]);
+    if (col > 0) neighbors.push([row, col - 1]);
+    if (col < BOARD_SIZE - 1) neighbors.push([row, col + 1]);
+    return neighbors;
+  };
+
+  // 연결된 돌들의 그룹을 찾는 함수
+  const getGroup = (board, row, col, visited = new Set()) => {
+    const key = `${row},${col}`;
+    if (visited.has(key) || board[row][col] === EMPTY) return [];
+    
+    visited.add(key);
+    const group = [[row, col]];
+    const color = board[row][col];
+    
+    getNeighbors(row, col).forEach(([r, c]) => {
+      if (board[r][c] === color) {
+        group.push(...getGroup(board, r, c, visited));
+      }
+    });
+    
+    return group;
+  };
+
+  // 그룹의 자유도를 계산하는 함수
+  const getLiberties = (board, group) => {
+    const liberties = new Set();
+    group.forEach(([row, col]) => {
+      getNeighbors(row, col).forEach(([r, c]) => {
+        if (board[r][c] === EMPTY) {
+          liberties.add(`${r},${c}`);
+        }
+      });
+    });
+    return liberties.size;
+  };
+
+  // 포로가 된 돌들을 제거하는 함수
+  const removeCapturedStones = (board, opponentColor) => {
+    const newBoard = board.map(row => [...row]);
+    let capturedCount = 0;
+    const visited = new Set();
+
+    for (let row = 0; row < BOARD_SIZE; row++) {
+      for (let col = 0; col < BOARD_SIZE; col++) {
+        const key = `${row},${col}`;
+        if (newBoard[row][col] === opponentColor && !visited.has(key)) {
+          const group = getGroup(newBoard, row, col, visited);
+          if (group.length > 0 && getLiberties(newBoard, group) === 0) {
+            group.forEach(([r, c]) => {
+              newBoard[r][c] = EMPTY;
+              capturedCount++;
+            });
+          }
+        }
+      }
+    }
+
+    return { board: newBoard, capturedCount };
+  };
+
+  // 돌을 놓을 수 있는지 확인하는 함수
+  const isValidMove = (board, row, col, color) => {
+    if (board[row][col] !== EMPTY) return false;
+
+    // 임시로 돌을 놓아봄
+    const tempBoard = board.map(r => [...r]);
+    tempBoard[row][col] = color;
+
+    // 상대방 돌을 잡을 수 있는지 확인
+    const opponentColor = color === BLACK ? WHITE : BLACK;
+    const { board: boardAfterCapture } = removeCapturedStones(tempBoard, opponentColor);
+    
+    // 자신의 그룹이 살아있는지 확인
+    const myGroup = getGroup(boardAfterCapture, row, col);
+    const myLiberties = getLiberties(boardAfterCapture, myGroup);
+    
+    return myLiberties > 0;
+  };
+
+  // AI 관련 함수들
+  const evaluatePosition = (board, color) => {
+    let score = 0;
+    const opponentColor = color === BLACK ? WHITE : BLACK;
+    
+    for (let row = 0; row < BOARD_SIZE; row++) {
+      for (let col = 0; col < BOARD_SIZE; col++) {
+        if (board[row][col] === color) {
+          // 내 돌 주변 평가
+          score += 10;
+          
+          // 모서리와 중앙 보너스
+          if (row === 0 || row === BOARD_SIZE - 1 || col === 0 || col === BOARD_SIZE - 1) {
+            score += 5; // 모서리 보너스
+          }
+          if (row >= 3 && row <= 15 && col >= 3 && col <= 15) {
+            score += 3; // 중앙 보너스
+          }
+          
+          // 연결성 평가
+          const neighbors = getNeighbors(row, col);
+          neighbors.forEach(([r, c]) => {
+            if (board[r][c] === color) score += 5;
+            if (board[r][c] === EMPTY) score += 2;
+          });
+        } else if (board[row][col] === opponentColor) {
+          // 상대 돌 주변 평가
+          const group = getGroup(board, row, col);
+          const liberties = getLiberties(board, group);
+          if (liberties <= 2) {
+            score += 20; // 상대방이 위험하면 점수 증가
+          }
+        }
+      }
+    }
+    
+    return score;
+  };
+
+  const getAllValidMoves = (board, color) => {
+    const moves = [];
+    for (let row = 0; row < BOARD_SIZE; row++) {
+      for (let col = 0; col < BOARD_SIZE; col++) {
+        if (isValidMove(board, row, col, color)) {
+          moves.push([row, col]);
+        }
+      }
+    }
+    return moves;
+  };
+
+  const minimax = (board, depth, alpha, beta, maximizingPlayer, color) => {
+    if (depth === 0) {
+      return evaluatePosition(board, color);
+    }
+
+    const opponentColor = color === BLACK ? WHITE : BLACK;
+    const currentColor = maximizingPlayer ? color : opponentColor;
+    const validMoves = getAllValidMoves(board, currentColor);
+    
+    if (validMoves.length === 0) {
+      return evaluatePosition(board, color);
+    }
+
+    if (maximizingPlayer) {
+      let maxEval = -Infinity;
+      for (const [row, col] of validMoves.slice(0, Math.min(20, validMoves.length))) {
+        const newBoard = board.map(r => [...r]);
+        newBoard[row][col] = currentColor;
+        const { board: boardAfterCapture } = removeCapturedStones(newBoard, opponentColor);
+        
+        const eval_ = minimax(boardAfterCapture, depth - 1, alpha, beta, false, color);
+        maxEval = Math.max(maxEval, eval_);
+        alpha = Math.max(alpha, eval_);
+        if (beta <= alpha) break;
+      }
+      return maxEval;
+    } else {
+      let minEval = Infinity;
+      for (const [row, col] of validMoves.slice(0, Math.min(20, validMoves.length))) {
+        const newBoard = board.map(r => [...r]);
+        newBoard[row][col] = currentColor;
+        const { board: boardAfterCapture } = removeCapturedStones(newBoard, currentColor === BLACK ? WHITE : BLACK);
+        
+        const eval_ = minimax(boardAfterCapture, depth - 1, alpha, beta, true, color);
+        minEval = Math.min(minEval, eval_);
+        beta = Math.min(beta, eval_);
+        if (beta <= alpha) break;
+      }
+      return minEval;
+    }
+  };
+
+  const getAIMove = (board, color) => {
+    const validMoves = getAllValidMoves(board, color);
+    console.log(`AI found ${validMoves.length} valid moves`);
+    
+    if (validMoves.length === 0) return null;
+
+    // 게임 초반에는 화점 근처를 선호
+    if (gameHistory.length < 10) {
+      const starPoints = [[3, 3], [3, 15], [15, 3], [15, 15], [9, 9]];
+      for (const [sr, sc] of starPoints) {
+        const nearStar = validMoves.find(([r, c]) => 
+          Math.abs(r - sr) <= 2 && Math.abs(c - sc) <= 2
+        );
+        if (nearStar) {
+          console.log("AI chose star point strategy:", nearStar);
+          return nearStar;
+        }
+      }
+    }
+
+    // 간단한 전략: 가장 많은 적 돌과 인접한 곳을 찾기
+    let bestMove = null;
+    let bestScore = -1;
+    const opponentColor = color === BLACK ? WHITE : BLACK;
+
+    for (const [row, col] of validMoves.slice(0, 50)) { // 성능을 위해 최대 50개만 검사
+      let score = 0;
+      
+      // 주변에 상대방 돌이 있으면 점수 증가
+      const neighbors = getNeighbors(row, col);
+      neighbors.forEach(([r, c]) => {
+        if (board[r][c] === opponentColor) score += 3;
+        if (board[r][c] === color) score += 2;
+      });
+      
+      // 중앙 근처면 점수 증가
+      const centerDistance = Math.abs(row - 9) + Math.abs(col - 9);
+      score += Math.max(0, 10 - centerDistance);
+      
+      // 랜덤 요소 추가
+      score += Math.random() * 5;
+      
+      if (score > bestScore) {
+        bestScore = score;
+        bestMove = [row, col];
+      }
+    }
+
+    console.log("AI chose move:", bestMove, "with score:", bestScore);
+    return bestMove || validMoves[0]; // 최악의 경우 첫 번째 유효한 수
+  };
+
+  // AI 턴 처리
+  useEffect(() => {
+    if (gameMode === 'pvc' && currentPlayer === WHITE && !isThinking) {
+      setIsThinking(true);
+      const timer = setTimeout(() => {
+        try {
+          const aiMove = getAIMove(board, WHITE);
+          if (aiMove) {
+            const [row, col] = aiMove;
+            // AI 전용 돌 놓기 함수 호출
+            placeStoneAI(row, col);
+          } else {
+            // 둘 수 있는 곳이 없으면 패스
+            console.log("AI has no valid moves, passing turn");
+            setCurrentPlayer(BLACK);
+          }
+        } catch (error) {
+          console.error("AI move error:", error);
+          // 에러 발생 시 랜덤하게 두기
+          const validMoves = getAllValidMoves(board, WHITE);
+          if (validMoves.length > 0) {
+            const randomMove = validMoves[Math.floor(Math.random() * validMoves.length)];
+            placeStoneAI(randomMove[0], randomMove[1]);
+          } else {
+            setCurrentPlayer(BLACK);
+          }
+        }
+        setIsThinking(false);
+      }, 1000); // 1초 대기 (생각하는 시간)
+      
+      return () => clearTimeout(timer);
+    }
+  }, [currentPlayer, gameMode, board, isThinking]);
+
+  // AI 전용 돌 놓기 함수
+  const placeStoneAI = (row, col) => {
+    if (!isValidMove(board, row, col, WHITE)) return;
+
+    const newBoard = board.map(r => [...r]);
+    newBoard[row][col] = WHITE;
+
+    // 상대방 돌 포로 확인
+    const { board: finalBoard, capturedCount } = removeCapturedStones(newBoard, BLACK);
+
+    setBoard(finalBoard);
+    setGameHistory(prev => [...prev, { board: finalBoard, player: WHITE, row, col }]);
+    
+    if (capturedCount > 0) {
+      setCapturedStones(prev => ({
+        ...prev,
+        white: prev.white + capturedCount
+      }));
+    }
+
+    setCurrentPlayer(BLACK);
+  };
+  const placeStone = useCallback((row, col) => {
+    if (!isValidMove(board, row, col, currentPlayer)) return;
+
+    const newBoard = board.map(r => [...r]);
+    newBoard[row][col] = currentPlayer;
+
+    // 상대방 돌 포로 확인
+    const opponentColor = currentPlayer === BLACK ? WHITE : BLACK;
+    const { board: finalBoard, capturedCount } = removeCapturedStones(newBoard, opponentColor);
+
+    setBoard(finalBoard);
+    setGameHistory([...gameHistory, { board: finalBoard, player: currentPlayer, row, col }]);
+    
+    if (capturedCount > 0) {
+      setCapturedStones(prev => ({
+        ...prev,
+        [currentPlayer === BLACK ? 'black' : 'white']: prev[currentPlayer === BLACK ? 'black' : 'white'] + capturedCount
+      }));
+    }
+
+    setCurrentPlayer(currentPlayer === BLACK ? WHITE : BLACK);
+  }, [board, currentPlayer, gameHistory, isThinking, gameMode]);
+
+  // 게임 리셋
+  const resetGame = () => {
+    setBoard(Array(BOARD_SIZE).fill(null).map(() => Array(BOARD_SIZE).fill(EMPTY)));
+    setCurrentPlayer(BLACK);
+    setCapturedStones({ black: 0, white: 0 });
+    setGameHistory([]);
+    setIsThinking(false);
+  };
+
+  // 한 수 무르기
+  const undoMove = () => {
+    if (gameHistory.length === 0) return;
+    
+    const newHistory = [...gameHistory];
+    newHistory.pop();
+    
+    if (newHistory.length === 0) {
+      resetGame();
+      return;
+    }
+
+    const lastMove = newHistory[newHistory.length - 1];
+    setBoard(lastMove.board);
+    setCurrentPlayer(lastMove.player === BLACK ? WHITE : BLACK);
+    setGameHistory(newHistory);
+  };
+
+  const getStoneStyle = (stone) => {
+    if (stone === BLACK) return 'bg-black border-gray-600';
+    if (stone === WHITE) return 'bg-white border-gray-400';
+    return 'bg-transparent';
+  };
+
+  const getStarPoints = () => {
+    const points = [];
+    // 9개의 화점 (별점)
+    const starPositions = [
+      [3, 3], [3, 9], [3, 15],
+      [9, 3], [9, 9], [9, 15],
+      [15, 3], [15, 9], [15, 15]
+    ];
+    
+    starPositions.forEach(([row, col]) => {
+      points.push(
+        <div
+          key={`star-${row}-${col}`}
+          className="absolute w-2 h-2 bg-black rounded-full transform -translate-x-1/2 -translate-y-1/2"
+          style={{
+            left: `${(col * 100) / (BOARD_SIZE - 1)}%`,
+            top: `${(row * 100) / (BOARD_SIZE - 1)}%`,
+          }}
+        />
+      );
+    });
+    
+    return points;
+  };
+
+  return (
+    <div className="flex flex-col items-center p-4 bg-amber-50 min-h-screen">
+      <h1 className="text-4xl font-bold text-amber-900 mb-6">바둑</h1>
+      
+      {/* 게임 모드 선택 */}
+      <div className="flex gap-4 mb-4">
+        <button
+          onClick={() => {
+            setGameMode('pvp');
+            resetGame();
+          }}
+          className={`px-4 py-2 rounded-lg font-semibold ${
+            gameMode === 'pvp' 
+              ? 'bg-blue-500 text-white' 
+              : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+          }`}
+        >
+          플레이어 vs 플레이어
+        </button>
+        <button
+          onClick={() => {
+            setGameMode('pvc');
+            resetGame();
+          }}
+          className={`px-4 py-2 rounded-lg font-semibold ${
+            gameMode === 'pvc' 
+              ? 'bg-green-500 text-white' 
+              : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+          }`}
+        >
+          플레이어 vs 컴퓨터
+        </button>
+      </div>
+
+      {/* 게임 정보 */}
+      <div className="flex items-center gap-8 mb-6 bg-white p-4 rounded-lg shadow-md">
+        <div className="flex items-center gap-2">
+          <div className={`w-6 h-6 rounded-full border-2 ${currentPlayer === BLACK ? 'bg-black border-gray-600' : 'bg-white border-gray-400'}`}></div>
+          <span className="font-semibold">
+            {gameMode === 'pvc' 
+              ? (currentPlayer === BLACK ? '당신의 차례 (흑)' : '컴퓨터가 생각 중... (백)')
+              : (currentPlayer === BLACK ? '흑의 차례' : '백의 차례')
+            }
+          </span>
+          {isThinking && (
+            <div className="ml-2 flex space-x-1">
+              <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce"></div>
+              <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
+              <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
+            </div>
+          )}
+        </div>
+        <div className="flex gap-4">
+          <div className="flex items-center gap-1">
+            <div className="w-4 h-4 bg-black rounded-full"></div>
+            <span>잡은 돌: {capturedStones.black}</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="w-4 h-4 bg-white border border-gray-400 rounded-full"></div>
+            <span>잡은 돌: {capturedStones.white}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* 바둑판 */}
+      <div className="relative bg-amber-100 p-8 rounded-lg shadow-lg">
+        <div 
+          className="relative bg-amber-200 grid gap-0"
+          style={{ 
+            gridTemplateColumns: `repeat(${BOARD_SIZE}, 1fr)`,
+            width: '600px',
+            height: '600px'
+          }}
+        >
+          {/* 바둑판 선 그리기 */}
+          <div className="absolute inset-0">
+            {/* 세로선 */}
+            {Array.from({ length: BOARD_SIZE }, (_, i) => (
+              <div
+                key={`v-line-${i}`}
+                className="absolute bg-black"
+                style={{
+                  left: `${(i * 100) / (BOARD_SIZE - 1)}%`,
+                  top: '0%',
+                  width: '1px',
+                  height: '100%',
+                  transform: 'translateX(-0.5px)'
+                }}
+              />
+            ))}
+            {/* 가로선 */}
+            {Array.from({ length: BOARD_SIZE }, (_, i) => (
+              <div
+                key={`h-line-${i}`}
+                className="absolute bg-black"
+                style={{
+                  top: `${(i * 100) / (BOARD_SIZE - 1)}%`,
+                  left: '0%',
+                  height: '1px',
+                  width: '100%',
+                  transform: 'translateY(-0.5px)'
+                }}
+              />
+            ))}
+          </div>
+
+          {/* 화점 (별점) */}
+          {getStarPoints()}
+
+          {/* 바둑돌 */}
+          {board.map((row, rowIndex) =>
+            row.map((stone, colIndex) => (
+              <div
+                key={`${rowIndex}-${colIndex}`}
+                className="relative flex items-center justify-center cursor-pointer hover:bg-amber-300 hover:bg-opacity-30"
+                onClick={() => placeStone(rowIndex, colIndex)}
+                style={{
+                  gridColumn: colIndex + 1,
+                  gridRow: rowIndex + 1,
+                }}
+              >
+                {stone !== EMPTY && (
+                  <div
+                    className={`w-7 h-7 rounded-full border-2 shadow-md ${getStoneStyle(stone)}`}
+                  />
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* 게임 컨트롤 */}
+      <div className="flex gap-4 mt-6">
+        <button
+          onClick={undoMove}
+          disabled={gameHistory.length === 0}
+          className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
+        >
+          무르기
+        </button>
+        <button
+          onClick={resetGame}
+          className="px-6 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600"
+        >
+          새 게임
+        </button>
+      </div>
+
+      {/* 게임 설명 */}
+      <div className="mt-6 bg-white p-4 rounded-lg shadow-md max-w-2xl">
+        <h3 className="font-bold text-lg mb-2">게임 규칙:</h3>
+        <ul className="text-sm space-y-1 text-gray-700">
+          <li>• 흑돌이 먼저 시작합니다</li>
+          <li>• 교차점에 돌을 놓으며, 이미 돌이 있는 곳에는 놓을 수 없습니다</li>
+          <li>• 상대방 돌을 포위하면 잡을 수 있습니다</li>
+          <li>• 자살수(자신의 돌이 잡히는 수)는 둘 수 없습니다</li>
+          <li>• 무르기로 이전 수를 취소할 수 있습니다</li>
+          {gameMode === 'pvc' && (
+            <li>• <strong>컴퓨터와 대전:</strong> 흑돌(당신)이 먼저, 백돌(컴퓨터)이 자동으로 응수합니다</li>
+          )}
+        </ul>
+      </div>
+    </div>
+  );
+};
+
+export default BadukGame;
