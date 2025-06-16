@@ -448,9 +448,8 @@ const BadukGame = () => {
       {/* 바둑판 */}
       <div className="relative bg-amber-100 p-8 rounded-lg shadow-lg">
         <div 
-          className="relative bg-amber-200 grid gap-0"
+          className="relative bg-amber-200"
           style={{ 
-            gridTemplateColumns: `repeat(${BOARD_SIZE}, 1fr)`,
             width: '600px',
             height: '600px'
           }}
@@ -490,16 +489,19 @@ const BadukGame = () => {
           {/* 화점 (별점) */}
           {getStarPoints()}
 
-          {/* 바둑돌 */}
+          {/* 바둑돌과 클릭 영역 */}
           {board.map((row, rowIndex) =>
             row.map((stone, colIndex) => (
               <div
                 key={`${rowIndex}-${colIndex}`}
-                className="relative flex items-center justify-center cursor-pointer hover:bg-amber-300 hover:bg-opacity-30"
+                className="absolute cursor-pointer hover:bg-amber-300 hover:bg-opacity-40 flex items-center justify-center"
                 onClick={() => placeStone(rowIndex, colIndex)}
                 style={{
-                  gridColumn: colIndex + 1,
-                  gridRow: rowIndex + 1,
+                  left: `${(colIndex * 100) / (BOARD_SIZE - 1)}%`,
+                  top: `${(rowIndex * 100) / (BOARD_SIZE - 1)}%`,
+                  width: '32px',
+                  height: '32px',
+                  transform: 'translate(-50%, -50%)',
                 }}
               >
                 {stone !== EMPTY && (
